@@ -1,255 +1,208 @@
 import tensorflow as tf
 import numpy as np
-from dataset import load  # Adjust the import path based on your project structure
+from dataset import load
 import scipy.io
 from sklearn.cluster import KMeans
+from sklearn.model_selection import train_test_split
 import matplotlib.pyplot as plt
-
+from tensorflow.keras.regularizers import l2
 
 # Dataset parameters
 dataset_path = '/Users/thaneshn/Desktop/ActionAnticipation-master/DataSet/merged_labeled_actions.mat'
 sequence_length = 10
-prediction_length = 5
-
-mat_data = scipy.io.loadmat(dataset_path)
-
-    # Extract the joint data
-joints_data = mat_data['joints']
-
-    # Compute the variance across the temporal and sample dimensions for each joint feature
-joint_variances = np.var(joints_data, axis=(1, 2))
-
-    # Compute the mean joint positions over time to simplify analysis
-mean_positions = np.mean(joints_data, axis=2)
-
-    # Apply K-means clustering to the mean positions of the joints
-n_clusters = 5  # Number of clusters
-kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-joint_clusters = kmeans.fit_predict(mean_positions)
-target_cluster = 4  # Focus on Cluster 4
+prediction_length = 1
 
 # Load the dataset
+mat_data = scipy.io.loadmat(dataset_path)
+joints_data = mat_data['joints']
+joint_variances = np.var(joints_data, axis=(1, 2))
+mean_positions = np.mean(joints_data, axis=2)
+
+# Apply K-means clustering
+n_clusters = 5
+kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=42)
+joint_clusters = kmeans.fit_predict(mean_positions)
+target_cluster = 4
+
+# Load processed dataset
 X_combined_, Y_object_past_, Y_object_, sequence_lengths = load(
     dataset_path, sequence_length, prediction_length, joint_clusters, target_cluster=4
 )
 
-# Convert data to TensorFlow tensors
-X_combined_tensor = tf.ragged.constant(X_combined_)
-Y_object_past_tensor = tf.ragged.constant(Y_object_past_)
-Y_object_tensor = tf.ragged.constant(Y_object_)
+# Add Gaussian Noise for Data Augmentation
+def add_noise(data, noise_factor=0.05):
+    noisy_data = data + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=data.shape)
+    return np.clip(noisy_data, 0.0, 1.0)
 
-print("Y_object_ sample:", Y_object_[:1])
-print("Y_object_ shape:", len(Y_object_))
+X_combined_noisy = add_noise(np.array(X_combined_))
 
-# Define dataset
-dataset = tf.data.Dataset.from_tensor_slices((
-    X_combined_tensor, Y_object_past_tensor, Y_object_tensor
-)).batch(32)
+# Train-Test Split
+X_train, X_test, Y_past_train, Y_past_test, Y_train, Y_test = train_test_split(
+    X_combined_noisy, Y_object_past_, Y_object_, test_size=0.2, random_state=42
+)
 
+# Convert to TensorFlow tensors (avoid RaggedTensor)
+X_train_tensor = tf.convert_to_tensor(X_train, dtype=tf.float32)
+Y_past_train_tensor = tf.convert_to_tensor(Y_past_train, dtype=tf.float32)
+Y_train_tensor = tf.convert_to_tensor(Y_train, dtype=tf.int32)
 
+X_test_tensor = tf.convert_to_tensor(X_test, dtype=tf.float32)
+Y_past_test_tensor = tf.convert_to_tensor(Y_past_test, dtype=tf.float32)
+Y_test_tensor = tf.convert_to_tensor(Y_test, dtype=tf.int32)
+
+# Create TensorFlow datasets
+train_dataset = tf.data.Dataset.from_tensor_slices(
+    ((X_train_tensor, Y_past_train_tensor), Y_train_tensor)
+).shuffle(1000).batch(32)
+
+test_dataset = tf.data.Dataset.from_tensor_slices(
+    ((X_test_tensor, Y_past_test_tensor), Y_test_tensor)
+).batch(32)
+
+# Model Definition
 class ActionPredictionModel(tf.keras.Model):
     def __init__(self, parameters):
         super(ActionPredictionModel, self).__init__()
         self.parameters = parameters
-        self.hidden_state_size = parameters.get('hidden_state_size', 128)
+        self.hidden_state_size = parameters.get('hidden_state_size', 20)
+        self.vocab_size = parameters.get('vocab_size', 6)
 
-        # Normalization Layer
+        # Normalization and feature extraction layers
         self.norm_layer = tf.keras.layers.LayerNormalization()
+        self.feature_dense1 = tf.keras.layers.Dense(32, activation='relu', kernel_regularizer=l2(1e-4))
+        self.feature_dense2 = tf.keras.layers.Dense(16, activation='relu', kernel_regularizer=l2(1e-4))
+        self.feature_dense3 = tf.keras.layers.Dense(8, activation='relu', kernel_regularizer=l2(1e-4))
+        self.dropout = tf.keras.layers.Dropout(0.3)
+        self.batch_norm = tf.keras.layers.BatchNormalization()
 
-        # Combined Feature Processing
-        self.feature_dense1 = tf.keras.layers.Dense(50, activation='relu')
-        self.feature_dense2 = tf.keras.layers.Dense(20, activation='relu')
-        self.feature_dense3 = tf.keras.layers.Dense(10, activation='relu')
-
-        # Context Encoder with Attention
+        # Encoder: Bidirectional LSTM with attention
         self.encoder = tf.keras.layers.Bidirectional(
-            tf.keras.layers.LSTM(
-                self.hidden_state_size, return_sequences=True, return_state=True
-            )
+            tf.keras.layers.LSTM(self.hidden_state_size, return_sequences=True, return_state=True,
+                                   dropout=0.2, recurrent_dropout=0.2)
         )
         self.attention = tf.keras.layers.Attention()
+        self.state_h_dense = tf.keras.layers.Dense(self.hidden_state_size)
+        self.state_c_dense = tf.keras.layers.Dense(self.hidden_state_size)
+        self.query_dense = tf.keras.layers.Dense(self.hidden_state_size * 2)
 
-        # Decoder
-        self.decoder = tf.keras.layers.LSTM(
-            self.hidden_state_size, return_sequences=True, return_state=True
-        )
+        # Decoder and Output
+        self.decoder = tf.keras.layers.LSTM(self.hidden_state_size, return_sequences=True, return_state=True,
+                                            dropout=0.2, recurrent_dropout=0.2)
+        self.output_layer = tf.keras.layers.Dense(self.vocab_size, activation='softmax')
 
-        # Output Layer
-        self.output_layer = tf.keras.layers.Dense(
-            self.parameters['vocab_size'], activation='softmax'
-        )
+    def build(self, input_shape):
+        # input_shape is a tuple: (X_seq_shape, Y_past_shape)
+        # Ensure that all sublayers are built with appropriate input shapes.
+        feature_shape = input_shape[0]  # e.g., (batch_size, sequence_length, feature_dim)
+        self.norm_layer.build(feature_shape)
+        self.feature_dense1.build(feature_shape)
+        # Assuming the output of feature_dense1 has last dim = 32.
+        self.feature_dense2.build((feature_shape[0], feature_shape[1], 32))
+        self.feature_dense3.build((feature_shape[0], feature_shape[1], 16))
+        # Build remaining layers by passing dummy data if needed.
+        super(ActionPredictionModel, self).build(input_shape)
 
-    def call(self, inputs, training=False):
-        X_combined, Y_past = inputs
+def call(self, inputs, training=False):
+    # Expect inputs as a tuple: (X_sequence, Y_past)
+    X_seq, Y_past = inputs
+    # Cast X_seq to float16 as desired (global policy)
+    X_seq = tf.cast(X_seq, dtype=tf.float16)
+    X_norm = self.norm_layer(X_seq)
+    x = self.feature_dense1(X_norm)
+    x = self.batch_norm(x, training=training)
+    x = self.dropout(x, training=training)
+    x = self.feature_dense2(x)
+    x = self.dropout(x, training=training)
+    x = self.feature_dense3(x)
+    
+    # BatchNormalization often returns float32 values even with mixed precision.
+    # So cast Y_past to float32 (instead of float16) to match x's dtype.
+    Y_past_cast = tf.expand_dims(tf.cast(Y_past, tf.float32), axis=-1)
+    input_sequence = tf.concat([x, Y_past_cast], axis=2)
 
-        # Normalize combined features
-        X_combined = self.norm_layer(X_combined)
+    # Encoder: process the concatenated sequence
+    encoder_outputs, forward_h, forward_c, backward_h, backward_c = self.encoder(input_sequence)
+    state_h = tf.concat([forward_h, backward_h], axis=-1)
+    state_c = tf.concat([forward_c, backward_c], axis=-1)
 
-        # Process features
-        combined_embedding = self.feature_dense1(X_combined)
-        combined_embedding = self.feature_dense2(combined_embedding)
-        combined_embedding = self.feature_dense3(combined_embedding)
+    # Reduce states to match decoder's hidden state size.
+    state_h = self.state_h_dense(state_h)
+    state_c = self.state_c_dense(state_c)
 
-        # Combine with past labels
-        input_sequence = tf.concat([
-            combined_embedding,
-            tf.expand_dims(tf.cast(Y_past, tf.float32), axis=-1)
-        ], axis=2)
+    # Build attention query from state_h.
+    query = self.query_dense(state_h)
+    query = tf.expand_dims(query, axis=1)
+    attention_output = self.attention([query, encoder_outputs])
+    attention_output = tf.squeeze(attention_output, axis=1)
 
-        # Encode context
-        encoder_outputs, forward_h, forward_c, backward_h, backward_c = self.encoder(input_sequence)
-
-        # Combine forward and backward states
-        state_h = tf.concat([forward_h, backward_h], axis=-1)
-        state_c = tf.concat([forward_c, backward_c], axis=-1)
-
-        # Project combined states to match decoder dimensions
-        state_h = tf.keras.layers.Dense(self.hidden_state_size)(state_h)
-        state_c = tf.keras.layers.Dense(self.hidden_state_size)(state_c)
-
-        # Apply attention
-        attention_output = self.attention([encoder_outputs, encoder_outputs])
-
-        # Decode predictions
-        decoder_outputs, _, _ = self.decoder(attention_output, initial_state=[state_h, state_c])
-
-        # Generate output
-        predictions = self.output_layer(decoder_outputs)
-        return predictions
+    # Decoder: generate predictions.
+    decoder_outputs, _, _ = self.decoder(tf.expand_dims(attention_output, axis=1),
+                                         initial_state=[state_h, state_c])
+    predictions = self.output_layer(decoder_outputs)
+    return predictions
 
 
-# Training utilities
+# Training Utilities
 def train_step(model, optimizer, loss_fn, inputs, labels):
     with tf.GradientTape() as tape:
         predictions = model(inputs, training=True)
-        sliced_predictions = predictions[:, -labels.shape[1]:, :]  # Slice predictions for the last prediction_length
-        loss = loss_fn(tf.one_hot(labels, depth=model.parameters['vocab_size']), sliced_predictions)
-
+        # Remove the extra sequence dimension if needed (assumes predictions shape is (batch, 1, vocab_size))
+        predictions = tf.squeeze(predictions, axis=1)
+        labels = tf.one_hot(tf.squeeze(labels, axis=1), depth=model.parameters['vocab_size'])
+        loss = loss_fn(labels, predictions)
     gradients = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-    return loss, sliced_predictions
+    return loss, predictions
 
 def evaluate_model(model, dataset):
     accuracy_metric = tf.keras.metrics.CategoricalAccuracy()
-
-    for X_combined_batch, Y_past_batch, Y_batch in dataset:
-        inputs = (
-            X_combined_batch.to_tensor(),
-            Y_past_batch.to_tensor(),
-        )
-        labels = tf.one_hot(Y_batch.to_tensor(), depth=model.parameters['vocab_size'])
-        predictions = model(inputs, training=False)
-        sliced_predictions = predictions[:, -labels.shape[1]:, :]  # Slice predictions for the last prediction_length
-
-        # Update accuracy metric
-        accuracy_metric.update_state(labels, sliced_predictions)
-
+    for (X_combined_batch, Y_past_batch), Y_batch in dataset:
+        predictions = model((X_combined_batch, Y_past_batch), training=False)
+        predictions = tf.squeeze(predictions, axis=1)
+        labels = tf.one_hot(tf.squeeze(Y_batch, axis=1), depth=model.parameters['vocab_size'])
+        accuracy_metric.update_state(labels, predictions)
     return accuracy_metric.result().numpy()
 
-def train_model(model, dataset, epochs, optimizer, loss_fn, patience=3):
-    train_loss_history = []
-    train_accuracy_history = []
-    val_accuracy_history = []
-
+def train_model(model, train_dataset, test_dataset, epochs, optimizer, loss_fn, patience=5):
     best_val_accuracy = 0.0
     no_improvement_epochs = 0
-
     for epoch in range(epochs):
         epoch_loss = 0
         accuracy_metric = tf.keras.metrics.CategoricalAccuracy()
-
-        # Training loop
-        for X_combined_batch, Y_past_batch, Y_batch in dataset:
-            inputs = (
-                X_combined_batch.to_tensor(),
-                Y_past_batch.to_tensor(),
-            )
-            labels = Y_batch.to_tensor()
-
-            # Perform a training step
-            loss, sliced_predictions = train_step(model, optimizer, loss_fn, inputs, labels)
+        for (X_combined_batch, Y_past_batch), Y_batch in train_dataset:
+            loss, predictions = train_step(model, optimizer, loss_fn, (X_combined_batch, Y_past_batch), Y_batch)
             epoch_loss += loss
+            accuracy_metric.update_state(tf.one_hot(tf.squeeze(Y_batch, axis=1), depth=model.parameters['vocab_size']), predictions)
+        val_accuracy = evaluate_model(model, test_dataset)
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss.numpy()}, Accuracy: {accuracy_metric.result().numpy()}, Validation Accuracy: {val_accuracy}")
 
-            # Update metrics
-            accuracy_metric.update_state(tf.one_hot(labels, depth=model.parameters['vocab_size']), sliced_predictions)
-
-        # Store training metrics
-        train_loss_history.append(epoch_loss.numpy())
-        train_accuracy_history.append(accuracy_metric.result().numpy())
-
-        # Validation accuracy
-        val_accuracy = evaluate_model(model, dataset)
-        val_accuracy_history.append(val_accuracy)
-
-        # Print metrics
-        print(f"Epoch {epoch + 1}/{epochs}, Loss: {epoch_loss.numpy()}, Accuracy: {accuracy_metric.result().numpy()}, Validation Accuracy: {val_accuracy}")
-
-        # Check for early stopping
+        
         if val_accuracy > best_val_accuracy:
             best_val_accuracy = val_accuracy
-            no_improvement_epochs = 0  # Reset counter if validation accuracy improves
+            no_improvement_epochs = 0
         else:
             no_improvement_epochs += 1
-
         if no_improvement_epochs >= patience:
-            print(f"Early stopping triggered after {epoch + 1} epochs. Best Validation Accuracy: {best_val_accuracy}")
+            print(f"Early stopping after {epoch+1} epochs. Best Validation Accuracy: {best_val_accuracy}")
             break
+        
 
-    return train_loss_history, train_accuracy_history, val_accuracy_history
-
-if len(Y_object_) == 0:
-    raise ValueError("Y_object_ is empty after dataset processing. Check the input data or processing pipeline.")
-
-parameters = {
-    'sequence_length': sequence_length,
-    'vocab_size': 10,
-    'hidden_state_size': 128,
-}
-
-# Initialize the model, optimizer, and loss function
+# Prepare model parameters and instantiate the model
+vocab_size = len(np.unique(Y_object_))
+parameters = {'sequence_length': sequence_length, 'vocab_size': vocab_size, 'hidden_state_size': 30}
 model = ActionPredictionModel(parameters)
-lr_schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-    initial_learning_rate=1e-3,
-    decay_steps=1000,
-    decay_rate=0.95
+
+# Force building the model by running a dummy input through it
+feature_dim = X_train_tensor.shape[-1]
+dummy_input = (
+    tf.random.uniform((1, sequence_length, feature_dim)),
+    tf.random.uniform((1, sequence_length), maxval=vocab_size, dtype=tf.int32)
 )
-optimizer = tf.keras.optimizers.Adam(learning_rate=lr_schedule)
+_ = model(dummy_input, training=False)
+
+# Set up optimizer and loss function
+optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
 loss_fn = tf.keras.losses.CategoricalCrossentropy()
 
-
 # Train the model
-epochs = 10
-train_loss_history, train_accuracy_history, val_accuracy_history = train_model(
-    model, dataset, epochs, optimizer, loss_fn
-)
-
-# Evaluate model accuracy, precision, and recall
-accuracy= evaluate_model(model, dataset)
-print(f"Final Training Accuracy: {accuracy}")
-
-def plot_training_history(loss_history, train_accuracy_history, val_accuracy_history):
-    epochs = range(1, len(loss_history) + 1)
-
-    # Plot training loss
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
-    plt.plot(epochs, loss_history, label='Training Loss', marker='o')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title('Training Loss Over Epochs')
-    plt.legend()
-
-    # Plot training accuracy
-    plt.subplot(1, 2, 2)
-    plt.plot(epochs, train_accuracy_history, label='Training Accuracy', marker='o')
-    plt.plot(epochs, val_accuracy_history, label='Validation Accuracy', marker='x', linestyle='--')
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.title('Training vs Validation Accuracy')
-    plt.legend()
-
-
-    plt.tight_layout()
-    plt.show()
-
-plot_training_history(train_loss_history, train_accuracy_history, val_accuracy_history)
+train_model(model, train_dataset, test_dataset, epochs=20, optimizer=optimizer, loss_fn=loss_fn)
