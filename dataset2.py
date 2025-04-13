@@ -4,7 +4,6 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from tensorflow.keras.regularizers import l2
-import ruptures as rpt
 
 # Enable XLA for speed and set mixed precision
 try:
@@ -18,9 +17,12 @@ tf.keras.mixed_precision.set_global_policy('mixed_float16')
 # 1. Data Loading and Preprocessing
 # ------------------------------------------------------
 file_path = '/Users/thaneshn/Desktop/ActionAnticipation-master/prediction/merge.csv'
-# Skip first row if it contains metadata, then assign column names
+# Skip the first row if it contains metadata, then assign column names
 data = pd.read_csv(file_path, skiprows=1, header=None)
 data.columns = ['Head_Vel', 'HeadVector_X', 'HeadVector_Y', 'HeadVector_Z', 'Label']
+
+data = data.sample(frac=0.2, random_state=42)
+print(f"Data shape after sampling half the rows: {data.shape}")
 
 # Extract features and labels
 X = data[['Head_Vel', 'HeadVector_X', 'HeadVector_Y', 'HeadVector_Z']].values
@@ -30,40 +32,17 @@ y = data['Label'].astype(int).values  # ensure integer labels
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
-# ------------------------------------------------------
-# 2. Downsampling / Frame Skipping
-# ------------------------------------------------------
-def downsample_frames(X, y, skip=2):
-    """
-    Downsamples the data by taking every 'skip'-th frame.
-    This reduces redundancy when the same label appears consecutively.
-    """
-    return X[::skip], y[::skip]
-
-def downsample_cpd(X, y, model="l2", penalty=4):
-    """
-    Downsamples the data by applying change point detection using the ruptures library.
-    Returns a subset of frames corresponding to the start of detected segments.
-    """
-    algo = rpt.Pelt(model=model).fit(X)
-    # 'predict' returns the end index of each segment
-    change_points = algo.predict(pen=penalty)
-    indices = [0]  # always include the first frame
-    for cp in change_points[:-1]:
-        indices.append(cp)
-    indices = sorted(set(indices))
-    return X[indices], y[indices]
-
-# Apply change point detection downsampling
-X_downsampled, y_downsampled = downsample_cpd(X_scaled, y, model='l2', penalty=4)
-print(f"Original number of frames: {len(X_scaled)}, Downsampled: {len(X_downsampled)}")
+# With CPD removed, use the full dataset
+X_used, y_used = X_scaled, y
+print(f"Total number of frames: {len(X_used)}")
 
 # ------------------------------------------------------
-# 3. Create Sequences from Downsampled Data
+# 2. Create Sequences from Data
 # ------------------------------------------------------
 def create_sequences(X, y, sequence_length):
     """
-    Given downsampled data X and y, create sequences of length `sequence_length`.
+    Given data X and y, create sequences of length `sequence_length`.
+    
     Returns:
       - X_seq: (num_samples, sequence_length, feature_dim)
       - Y_past: (num_samples, sequence_length) -- past labels
@@ -71,16 +50,16 @@ def create_sequences(X, y, sequence_length):
     """
     X_seq, Y_past, y_target = [], [], []
     for i in range(len(X) - sequence_length):
-        X_seq.append(X[i: i+sequence_length])
-        Y_past.append(y[i: i+sequence_length])
-        y_target.append(y[i+sequence_length])
+        X_seq.append(X[i: i + sequence_length])
+        Y_past.append(y[i: i + sequence_length])
+        y_target.append(y[i + sequence_length])
     return np.array(X_seq), np.array(Y_past), np.array(y_target)
 
-# Define the sequence length (e.g., 20)
-sequence_length = 20
-X_seq, Y_past, y_target = create_sequences(X_downsampled, y_downsampled, sequence_length)
+# Define the sequence length (e.g., 10)
+sequence_length = 10
+X_seq, Y_past, y_target = create_sequences(X_used, y_used, sequence_length)
 
-# Split into train and test sets (you may consider preserving temporal order)
+# Split into train and test sets (you may consider preserving temporal order if necessary)
 X_train, X_test, Y_past_train, Y_past_test, y_train, y_test = train_test_split(
     X_seq, Y_past, y_target, test_size=0.2, random_state=42, shuffle=True
 )
@@ -94,7 +73,7 @@ test_dataset = tf.data.Dataset.from_tensor_slices(((X_test, Y_past_test), y_test
 test_dataset = test_dataset.batch(batch_size)
 
 # ------------------------------------------------------
-# 4. Model Definition
+# 3. Model Definition
 # ------------------------------------------------------
 class ActionPredictionModel(tf.keras.Model):
     def __init__(self, parameters):
@@ -164,7 +143,7 @@ class ActionPredictionModel(tf.keras.Model):
         return predictions
 
 # ------------------------------------------------------
-# 5. Model Training and Evaluation Functions
+# 4. Model Training and Evaluation Functions
 # ------------------------------------------------------
 def train_step(model, optimizer, loss_fn, inputs, labels):
     with tf.GradientTape() as tape:
@@ -215,14 +194,12 @@ def train_model(model, train_dataset, test_dataset, epochs, optimizer, loss_fn):
         
         print(f"Epoch {epoch+1}/{epochs} -- Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, "
               f"Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.4f}")
-        
-
 
 # ------------------------------------------------------
-# 6. Model Initialization & Training
+# 5. Model Initialization & Training
 # ------------------------------------------------------
-# Update vocab_size based on downsampled labels
-vocab_size = len(np.unique(y_downsampled))
+# Update vocab_size based on the full labels
+vocab_size = len(np.unique(y_used))
 parameters = {'sequence_length': sequence_length, 'vocab_size': vocab_size, 'hidden_state_size': 100}
 model = ActionPredictionModel(parameters)
 
@@ -230,4 +207,4 @@ optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0)
 loss_fn = tf.keras.losses.CategoricalCrossentropy()
 
 # Train the model
-train_model(model, train_dataset, test_dataset, epochs=100, optimizer=optimizer, loss_fn=loss_fn)
+train_model(model, train_dataset, test_dataset, epochs=53, optimizer=optimizer, loss_fn=loss_fn)
