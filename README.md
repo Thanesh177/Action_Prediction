@@ -6,7 +6,7 @@ This project implements a gaze and action prediction framework using deep learni
 To set up the environment for this gaze and action prediction framework, install the following dependencies:
 
 
-- Python >= 3.8
+Python >= 3.8
 
 
  numpy           >= 1.20        
