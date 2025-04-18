@@ -141,16 +141,37 @@ def evaluate_model(model, dataset):
 def train_model(model, train_dataset, test_dataset, epochs, optimizer, loss_fn, patience=5):
     best_val_accuracy = 0.0
     no_improvement_epochs = 0
+    best_weights = None
+
     for epoch in range(epochs):
-        epoch_loss = 0
+        epoch_loss = 0.0
         accuracy_metric = tf.keras.metrics.CategoricalAccuracy()
+
         for (X_combined_batch, Y_past_batch), Y_batch in train_dataset:
             loss, predictions = train_step(model, optimizer, loss_fn, (X_combined_batch, Y_past_batch), Y_batch)
-            epoch_loss += loss
+            epoch_loss += loss.numpy()
             accuracy_metric.update_state(tf.one_hot(tf.squeeze(Y_batch, axis=1), depth=model.parameters['vocab_size']), predictions)
-        val_accuracy = evaluate_model(model, test_dataset)
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss.numpy()}, Accuracy: {accuracy_metric.result().numpy()}, Validation Accuracy: {val_accuracy}")
 
+        val_accuracy = evaluate_model(model, test_dataset)
+        train_accuracy = accuracy_metric.result().numpy()
+
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss:.4f}, "
+              f"Accuracy: {train_accuracy:.4f}, Validation Accuracy: {val_accuracy:.4f}")
+
+        # Early stopping logic
+        if val_accuracy > best_val_accuracy:
+            best_val_accuracy = val_accuracy
+            no_improvement_epochs = 0
+            best_weights = model.get_weights()  # Save best weights
+        else:
+            no_improvement_epochs += 1
+            if no_improvement_epochs >= patience:
+                print(f"\nEarly stopping triggered at epoch {epoch+1}")
+                break
+
+    # Restore best weights if early stopping occurred
+    if best_weights is not None:
+        model.set_weights(best_weights)
 
 
 vocab_size = 11
@@ -167,4 +188,4 @@ _ = model(dummy_input, training=False)
 optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 loss_fn = tf.keras.losses.CategoricalCrossentropy()
 
-train_model(model, train_dataset, test_dataset, epochs=20, optimizer=optimizer, loss_fn=loss_fn)
+train_model(model, train_dataset, test_dataset, epochs=20, optimizer=optimizer, loss_fn=loss_fn,  patience=4)
