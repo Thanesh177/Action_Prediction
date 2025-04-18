@@ -17,14 +17,6 @@ scikit-learn>=1.0
 tensorflow>=2.11  
 opencv-python>=4.5  
 ruptures>=1.1   
-numpy>=1.20
-pandas>=1.3
-scipy>=1.7
-matplotlib>=3.4
-scikit-learn>=1.0
-tensorflow>=2.11
-opencv-python>=4.5
-ruptures>=1.1
 
 
 
