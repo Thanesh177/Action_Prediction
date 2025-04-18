@@ -9,14 +9,23 @@ To set up the environment for this gaze and action prediction framework, install
 Python >= 3.8
 
 
- numpy           >= 1.20        
- pandas          >= 1.3         
- scipy           >= 1.7         
- matplotlib      >= 3.4         
- scikit-learn    >= 1.0         
- tensorflow      >= 2.11       
- ruptures        >= 1.1         
- opencv-python   >= 4.5         
+numpy>=1.20        # Numerical computations
+pandas>=1.3        # DataFrame and CSV support
+scipy>=1.7         # .mat file loading and scientific operations
+matplotlib>=3.4    # Plotting and visualizations
+scikit-learn>=1.0  # KMeans, train_test_split, scaling
+tensorflow>=2.11   # Deep learning (LSTM, attention, mixed precision, JIT)
+opencv-python>=4.5  # For video I/O and gaze overlay
+ruptures>=1.1      # For CPD downsampling
+numpy>=1.20
+pandas>=1.3
+scipy>=1.7
+matplotlib>=3.4
+scikit-learn>=1.0
+tensorflow>=2.11
+opencv-python>=4.5
+ruptures>=1.1
+
 
 
 Should use TensorFlow >= 2.11 to ensure compatibility with mixed precision and JIT compilation.
