@@ -1,5 +1,48 @@
 # Action Anticipation Model
 
-This repository contains the Tensorflow implementation of the action and intent anticipation modules introduced in the IEEE International Conference on Robotics and Automation (ICRA), 2018 paper "Anticipation in Human-Robot Cooperation: A Recurrent Neural Network Approach for Multiple Action Sequences Prediction".
+This project implements a gaze and action prediction framework using deep learning and temporal modeling techniques. The system leverages head motion data, joint and body features, and gaze vectors to predict future actions and gaze directions in a sequence-to-one classification/regression setting.
 
-The open access version of the paper can be found here: https://arxiv.org/abs/1802.10503
+
+To set up the environment for this gaze and action prediction framework, install the following dependencies:
+
+
+- Python >= 3.8
+
+
+ numpy           >= 1.20        
+ pandas          >= 1.3         
+ scipy           >= 1.7         
+ matplotlib      >= 3.4         
+ scikit-learn    >= 1.0         
+ tensorflow      >= 2.11       
+ ruptures        >= 1.1         
+ opencv-python   >= 4.5         
+
+
+Should use TensorFlow >= 2.11 to ensure compatibility with mixed precision and JIT compilation.
+
+If using a GPU, install the appropriate version of tensorflow-gpu with CUDA 11.2 or higher.
+
+Dataset:
+
+1. Dataset1 (ANTICIPATE): https://vislab.isr.tecnico.ulisboa.pt/datasets_and_resources/#HRIcups
+
+2. Dataset2 (Ball_catch): https://drive.google.com/drive/folders/15J5jZx1aFi-WjWJSHR86sFClNQgpH75G
+
+Dataset.py - Contains core data loading functions such as reconstructStructure(), create_reference(), and load(). It handles the extraction and preprocessing of joint, body, and gaze features from .mat datasets for both action and gaze prediction tasks.
+
+
+Action_prediction_dataset1.py - Implements an action prediction model using joint and body features with BiLSTM encoder-decoder architecture and attention mechanism. Uses temporal sequences and categorical cross-entropy for supervised classification.
+
+Action_prediction_dataset2.py - Variation of the action prediction model using head velocity and head direction features from the ANTICIPATE dataset. Includes change point detection (CPD) for downsampling and uses BiLSTM + attention for robust temporal modeling.
+
+Gaze_prediction.py - 	Predicts future gaze coordinates (x, y, z) using joint, body, and gaze features. The model employs a Bidirectional LSTM encoder with attention and a sequential decoder to output predicted gaze vectors.
+
+vid.py - Visualization of the Gaze prediction also requires the output of Gaze_prediction.py to visualize results.
+
+
+         Variant                 | Final Val Accuracy
+Clustered Joint + Body + Gaze    |      92.4%
+Gaze + Joint + Body (No Clust)   |      92.7%
+Clustered Joint + Body           |      86.8%
+Joint + Body                     |      79.6%
