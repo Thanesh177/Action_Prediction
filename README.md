@@ -41,8 +41,12 @@ Gaze_prediction.py - 	Predicts future gaze coordinates (x, y, z) using joint, bo
 vid.py - Visualization of the Gaze prediction also requires the output of Gaze_prediction.py to visualize results.
 
 
-         Variant                 | Final Val Accuracy
-Clustered Joint + Body + Gaze    |      92.4%
-Gaze + Joint + Body (No Clust)   |      92.7%
-Clustered Joint + Body           |      86.8%
-Joint + Body                     |      79.6%
+## Model Variant Comparison
+
+| Variant                        | Final Validation Accuracy |
+|-------------------------------|----------------------------|
+| Clustered Joint + Body + Gaze | 92.4%                      |
+| Gaze + Joint + Body (No Clust)| 92.7%                      |
+| Clustered Joint + Body        | 86.8%                      |
+| Joint + Body                  | 79.6%                      |
+
